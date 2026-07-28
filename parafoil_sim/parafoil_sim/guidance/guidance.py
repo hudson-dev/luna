@@ -235,8 +235,14 @@ class PhasedGuidance:
             err = wrap_angle(psi_des - xk[3])
             u = float(np.clip(kp * err / mdl.p.K_turn, -da_lim, da_lim))
             u_ref[k] = u
-            xk = mdl.step(xk, u, Ts, wind_fn)
+            # Clip integration at h=0 so the terminal reference is the
+            # touchdown point, not an underground extrapolation.
+            xk = mdl.step(xk, u, Ts, wind_fn, stop_at_ground=True)
             x_ref[k + 1] = xk
+            if xk[2] <= 0.0:
+                u_ref[k + 1:] = u
+                x_ref[k + 2:] = xk
+                break
 
         # phase-dependent weighting
         mp = self.mp

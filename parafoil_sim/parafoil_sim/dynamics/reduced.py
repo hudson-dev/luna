@@ -63,13 +63,25 @@ class ReducedModel:
             (u - x[4]) / p.tau_turn,
         ])
 
-    def step(self, x: np.ndarray, u: float, Ts: float, wind_fn: WindFn) -> np.ndarray:
+    def step(self, x: np.ndarray, u: float, Ts: float, wind_fn: WindFn,
+             stop_at_ground: bool = False) -> np.ndarray:
         # Substep so the stiff lag state (tau_turn << Ts) stays inside the RK4
-        # stability region (|dt/tau| < 2.78).
-        n_sub = max(1, int(np.ceil(Ts / (1.5 * self.p.tau_turn))))
-        dt = Ts / n_sub
+        # stability region (|dt/tau| < 2.78). Optionally clip the step at
+        # touchdown so (pN, pE) is the impact point, not a past-ground state.
+        remaining = float(Ts)
+        if stop_at_ground and self.p.Vv > 0.0:
+            remaining = min(remaining, max(float(x[2]), 0.0) / self.p.Vv)
+        if remaining <= 0.0:
+            out = x.copy()
+            out[2] = max(out[2], 0.0)
+            return out
+        n_sub = max(1, int(np.ceil(remaining / (1.5 * self.p.tau_turn))))
+        dt = remaining / n_sub
         for _ in range(n_sub):
             x = rk4_step(lambda xx: self.f(xx, u, wind_fn), x, dt)
+        if stop_at_ground:
+            x = x.copy()
+            x[2] = max(float(x[2]), 0.0)
         return x
 
     def discrete_jacobians(self, x: np.ndarray, u: float, Ts: float, wind_fn: WindFn,

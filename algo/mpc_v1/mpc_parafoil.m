@@ -44,7 +44,19 @@ psiUW = atan2(-what(2), -what(1));   % heading that points INTO the wind
 
 for i = 1:numel(U)
     u  = U(i);
-    xk = rk4(@(xx) parafoil_dynamics(xx, u, what, P), xk, P.Ts);
+
+    % Integrate only up to touchdown. A full Ts step when h < Vv*Ts would
+    % drive altitude negative and place (px, py) past the true impact
+    % point, biasing path and terminal costs during final approach.
+    dt = P.Ts;
+    if xk(3) <= P.Vv * P.Ts
+        dt = xk(3) / max(P.Vv, eps);
+    end
+    if dt <= 0
+        break;
+    end
+    xk = rk4(@(xx) parafoil_dynamics(xx, u, what, P), xk, dt);
+    xk(3) = max(xk(3), 0);   % clamp RK4 residual overshoot
 
     % Running costs: stay near pad, steer gently and smoothly
     d2 = (xk(1) - P.target(1))^2 + (xk(2) - P.target(2))^2;
