@@ -3,7 +3,7 @@
 High-fidelity 3D simulation of an autonomous guided parafoil returning a small
 rocket to its launch pad, with a from-scratch **LTV-QP model-predictive
 controller solved with OSQP** — the flight-hardware formulation from the
-project roadmap (no MATLAB, no off-the-shelf MPC library).
+project roadmap (no MATLAB dependency; no off-the-shelf MPC library).
 
 ```
 .venv/bin/python run_sim.py                  # all four scenarios + Plotly + Three.js
