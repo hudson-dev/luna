@@ -1,0 +1,6 @@
+numpy>=2.0
+scipy>=1.14
+osqp>=1.0
+plotly>=6.0
+# optional: static image export for the viz spot-check script
+kaleido>=1.0
