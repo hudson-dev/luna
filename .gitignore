@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.python-version
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Regenerable heavy Plotly dashboards and video (recreate via run_sim.py)
+parafoil_sim/output/*.mp4
+parafoil_sim/output/*.gif
+parafoil_sim/output/calm.html
+parafoil_sim/output/steady_wind.html
+parafoil_sim/output/shear_turbulence.html
+parafoil_sim/output/strong_gusts.html
