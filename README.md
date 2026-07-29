@@ -11,6 +11,7 @@ parafoil back to the launch pad under wind disturbances.
 | [`parafoil_sim/`](parafoil_sim/) | High-fidelity 6-DOF Python simulator + LTV-QP MPC (no MATLAB) |
 | [`algo/mpc_v1/`](algo/mpc_v1/) | Legacy MATLAB MPC reference |
 | [`rocket/`](rocket/) | Rocket / OpenRocket design assets |
+| [`presentation/`](presentation/) | Editable MPC technical-review deck (`.pptx`) + generator script |
 
 ## Quick start (Python simulator)
 
