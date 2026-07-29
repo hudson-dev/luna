@@ -44,8 +44,9 @@ def main() -> int:
     ap.add_argument("--out", default="output/steady_wind_flight.mp4")
     ap.add_argument("--gif", default="output/steady_wind_flight.gif")
     ap.add_argument("--fps", type=int, default=12)
-    ap.add_argument("--sim-dt", type=float, default=0.333,
-                    help="simulation seconds advanced per video frame (0.333 @ 12fps ≈ 4×)")
+    ap.add_argument("--sim-dt", type=float, default=None,
+                    help="simulation seconds advanced per video frame "
+                         "(default: 2/fps, approximately 2× playback)")
     ap.add_argument("--width", type=int, default=960)
     ap.add_argument("--height", type=int, default=540)
     ap.add_argument("--camera", default="follow", choices=("follow", "rig", "free"))
@@ -54,6 +55,8 @@ def main() -> int:
     ap.add_argument("--gif-max-frames", type=int, default=120,
                     help="max frames in GIF; durations stretch to match MP4 length")
     args = ap.parse_args()
+    sim_dt = args.sim_dt if args.sim_dt is not None else 2.0 / args.fps
+    render_dt = 1.0 / args.fps
 
     html_path = (ROOT / args.html).resolve()
     if not html_path.is_file():
@@ -94,22 +97,24 @@ def main() -> int:
             )
             # settle first frame + camera
             page.evaluate(
-                """([cam]) => {
+                """([cam, renderDt]) => {
                   const v = window.__PARAFOIL_VIEWER;
                   v.pause();
+                  v.setManualRendering(true);
                   v.setCamera(cam);
                   v.setFrame(0);
                   // warm camera lerp
-                  for (let i = 0; i < 45; i++) v.renderOnce();
+                  for (let i = 0; i < 45; i++) v.renderOnce(renderDt);
                 }""",
-                [args.camera],
+                [args.camera, render_dt],
             )
             time.sleep(0.3)
 
             duration = page.evaluate("() => window.__PARAFOIL_VIEWER.duration")
-            n_est = int(duration / args.sim_dt) + 2
+            start_time = page.evaluate("() => window.__PARAFOIL_VIEWER.getTime()")
+            n_est = int(duration / sim_dt) + 2
             print(f"flight {duration:.1f}s → ~{n_est} frames @ {args.fps} fps "
-                  f"(sim_dt={args.sim_dt}s, camera={args.camera})")
+                  f"(sim_dt={sim_dt:.4f}s, camera={args.camera})")
 
             paths: list[pathlib.Path] = []
             done = False
@@ -117,12 +122,11 @@ def main() -> int:
             while not done:
                 if args.max_frames and i >= args.max_frames:
                     break
-                # settle a few renders so camera lerp catches up
+                # Advance the camera exactly once per output frame. Repeated
+                # hidden renders make a chase camera snap toward each pose.
                 page.evaluate(
-                    """() => {
-                      const v = window.__PARAFOIL_VIEWER;
-                      for (let k = 0; k < 8; k++) v.renderOnce();
-                    }"""
+                    "([dt]) => window.__PARAFOIL_VIEWER.renderOnce(dt)",
+                    [render_dt],
                 )
                 shot = frames_dir / f"f_{i:05d}.png"
                 page.screenshot(path=str(shot), type="png")
@@ -131,8 +135,8 @@ def main() -> int:
                     tnow = page.evaluate("() => window.__PARAFOIL_VIEWER.getTime()")
                     print(f"  frame {i:4d}  t={tnow:6.1f}s")
                 done = page.evaluate(
-                    "([dt]) => window.__PARAFOIL_VIEWER.stepSimTime(dt)",
-                    [args.sim_dt],
+                    "([target]) => window.__PARAFOIL_VIEWER.seekTime(target)",
+                    [start_time + (i + 1) * sim_dt],
                 )
                 i += 1
 

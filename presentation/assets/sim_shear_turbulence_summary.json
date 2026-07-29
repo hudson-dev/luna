@@ -1,0 +1,8 @@
+{
+  "miss_distance_m": 17.018859245988413,
+  "t_flight_s": 185.38000000002103,
+  "td_ground_speed_mps": 5.677972002054623,
+  "td_sink_rate_mps": 1.831101302162816,
+  "flare_triggered": true,
+  "landed": true
+}

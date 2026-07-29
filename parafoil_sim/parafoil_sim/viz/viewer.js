@@ -33,20 +33,38 @@
   const HINGE_FRACTION = 0.30;
   const N_RIB = 13;
   const N_CHORD = 11;
+  const NED_TO_SCENE = [
+    [0, 1, 0],
+    [0, 0, -1],
+    [1, 0, 0],
+  ];
 
   // ---------- math helpers ----------
   function quatNedToScene(qw, qx, qy, qz) {
-    // R_ned_body from scalar-first quat, then scene = ENU from NED:
-    // (n,e,d) → (e, -d, n)  ⇒  Three.js (x,y,z) = (E, Up, N)
+    // Geometry is stored in local scene axes via bodyToScene(), so convert
+    // the body→NED rotation into that same basis:
+    //
+    //   R_scene = T * R_ned_body * T^-1
+    //
+    // where T maps (N,E,D) to Three.js (E,Up,N).  Using only T*R would apply
+    // T twice to the already-converted geometry and make the follow-camera's
+    // local "back" vector track body vertical instead of body aft.
     const R = dcmFromQuat(qw, qx, qy, qz);
-    // T * R: rows of T applied to columns of R
-    // T = [[0,1,0],[0,0,-1],[1,0,0]]
-    const M = [
-      [R[1][0], R[1][1], R[1][2]],
-      [-R[2][0], -R[2][1], -R[2][2]],
-      [R[0][0], R[0][1], R[0][2]],
-    ];
+    const T = NED_TO_SCENE;
+    const M = mat3Multiply(mat3Multiply(T, R), mat3Transpose(T));
     return mat3ToQuat(M);
+  }
+
+  function mat3Multiply(A, B) {
+    return A.map((row) =>
+      B[0].map((_, j) =>
+        row.reduce((sum, value, k) => sum + value * B[k][j], 0)
+      )
+    );
+  }
+
+  function mat3Transpose(A) {
+    return A[0].map((_, j) => A.map((row) => row[j]));
   }
 
   function dcmFromQuat(w, x, y, z) {
@@ -653,7 +671,10 @@
   let camMode = "follow"; // free | follow | rig
   let showWind = true;
   let showTraj = true;
+  let manualRendering = false;
   let accum = 0;
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const followHeading = new THREE.Vector3(0, 0, 1);
 
   const elPlay = document.getElementById("btn-play");
   const elScrub = document.getElementById("scrub");
@@ -705,9 +726,15 @@
   function updateCamera(dt) {
     const p = vehicle.position;
     if (camMode === "follow") {
-      const back = new THREE.Vector3(0, 0, -1).applyQuaternion(vehicle.quaternion).multiplyScalar(28);
-      const up = new THREE.Vector3(0, 1, 0).multiplyScalar(12);
-      const desired = p.clone().add(back).add(up);
+      // Local +Z is body-forward after bodyToScene(). Project it onto the
+      // horizontal plane so roll/pitch cannot orbit the chase camera.
+      followHeading.set(0, 0, 1).applyQuaternion(vehicle.quaternion);
+      followHeading.y = 0;
+      if (followHeading.lengthSq() < 1e-8) followHeading.set(0, 0, 1);
+      followHeading.normalize();
+      const desired = p.clone()
+        .addScaledVector(followHeading, -28)
+        .addScaledVector(worldUp, 12);
       camera.position.lerp(desired, 1 - Math.exp(-3 * dt));
       controls.target.lerp(p.clone().add(new THREE.Vector3(0, 1.2, 0)), 1 - Math.exp(-4 * dt));
     } else if (camMode === "rig") {
@@ -798,6 +825,9 @@
       if (btn) btn.click();
       else camMode = mode;
     },
+    setManualRendering: (enabled) => {
+      manualRendering = Boolean(enabled);
+    },
     play: () => {
       if (!playing) elPlay.click();
     },
@@ -807,6 +837,18 @@
     seekFraction: (f) => {
       setFrame(Math.round(Math.max(0, Math.min(1, f)) * (n - 1)));
     },
+    seekTime: (targetTime) => {
+      const target = Math.max(frames.t[0], Math.min(frames.t[n - 1], Number(targetTime)));
+      let lo = 0;
+      let hi = n - 1;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (frames.t[mid] <= target) lo = mid;
+        else hi = mid - 1;
+      }
+      setFrame(lo);
+      return idx >= n - 1;
+    },
     /** Advance sim-time by `simDt` seconds (honors current speed only via caller). */
     stepSimTime: (simDt) => {
       const targetT = frames.t[idx] + simDt;
@@ -815,11 +857,19 @@
       setFrame(j);
       return idx >= n - 1;
     },
-    renderOnce: () => {
-      updateCamera(1 / 30);
+    renderOnce: (dt = 1 / 30) => {
+      updateCamera(Math.max(0, Number(dt) || 0));
+      controls.enabled = camMode === "free";
       controls.update();
       renderer.render(scene, camera);
     },
+    getCameraState: () => ({
+      mode: camMode,
+      position: camera.position.toArray(),
+      target: controls.target.toArray(),
+      vehiclePosition: vehicle.position.toArray(),
+      vehicleQuaternion: vehicle.quaternion.toArray(),
+    }),
   };
 
   let last = performance.now();
@@ -838,10 +888,12 @@
         }
       }
     }
-    updateCamera(dt);
-    controls.enabled = camMode === "free";
-    controls.update();
-    renderer.render(scene, camera);
+    if (!manualRendering) {
+      updateCamera(dt);
+      controls.enabled = camMode === "free";
+      controls.update();
+      renderer.render(scene, camera);
+    }
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
