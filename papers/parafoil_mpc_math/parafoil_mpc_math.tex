@@ -1,0 +1,411 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{siunitx}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{hyperref}
+
+\begin{document}
+
+\title{Nonlinear Model Predictive Guidance for a Kinematic Parafoil:\\
+Mathematical Formulation of a Return-to-Pad Simulation}
+
+\author{\IEEEauthorblockN{Hudson Kim}
+\IEEEauthorblockA{Guided Parachute Project}}
+
+\maketitle
+
+\begin{abstract}
+This paper derives the mathematics underlying a closed-loop simulation of guided parafoil return-to-pad under uncertain wind.
+The plant is a three-degree-of-freedom kinematic model with fixed horizontal airspeed and sink rate; the only control is commanded heading rate, interpreted through the coordinated-turn relation between bank angle and turn rate.
+Truth wind combines an atmospheric-boundary-layer power-law shear profile with a two-dimensional Ornstein--Uhlenbeck gust process.
+The controller does not observe truth wind: it forms a low-pass estimate from noisy GPS ground velocity, then solves a shrinking-horizon nonlinear model predictive control (NMPC) problem that predicts under the estimated wind held constant over the horizon.
+The stage cost penalizes range to the pad, control effort, and control rate; near the ground an upwind heading alignment term is activated, and a terminal weight that grows as altitude decreases emphasizes touchdown accuracy.
+Prediction and plant integration both use classical Runge--Kutta four (RK4).
+An illustrative seeded descent with the documented parameter set lands with a miss distance of approximately \SI{22}{\meter}.
+The contribution is a self-contained specification of the simulation equations and the NMPC program, situated relative to prior parafoil MPC and terminal-guidance literature.
+\end{abstract}
+
+\begin{IEEEkeywords}
+parafoil guidance, nonlinear model predictive control, kinematic model, wind estimation, return-to-pad
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Precision aerial delivery and soft recovery place demanding requirements on autonomous parafoil guidance: limited control authority, long flight times, and winds that often rival airspeed near the surface~\cite{SlegersYakimenko2009,Rademacher2009}.
+Model predictive control (MPC) is a natural fit because a human pilot also predicts a path and selects a turn sequence that reaches the landing zone~\cite{SlegersCostello2005}.
+Early flight-tested MPC for parafoil--payload systems used reduced-order linear dynamics and mapped planar paths into heading references~\cite{SlegersCostello2005}.
+Subsequent work emphasized terminal energy management, inverse-dynamics trajectory generation, and robustness to wind uncertainty~\cite{SlegersYakimenko2009,SlegersYakimenko2011,Rademacher2009}.
+More recent formulations optimize kinematic or dynamic models with convex or nonlinear real-time methods, including four-degree-of-freedom (4-DOF) kinematic guidance models with nearly constant airspeed and sink rate~\cite{Leeman2022} and six-degree-of-freedom (6-DOF) closed-loop frameworks~\cite{Wei2024}.
+
+The simulation studied here sits in the kinematic-guidance niche: a 3-DOF state (planar position, altitude, heading), fixed glide numbers, and heading-rate control.
+Unlike linear tracking MPC~\cite{SlegersCostello2005}, the predictor is the nonlinear kinematic map and the decision variables are the heading-rate sequence itself.
+Unlike high-fidelity 6-DOF designs~\cite{Wei2024,Zhao2023}, the model deliberately omits flare, apparent-mass, and canopy--payload relative motion so that the math of wind mismatch, estimation, and receding-horizon touchdown placement remains transparent.
+
+\textbf{Contribution.}
+We give a complete mathematical specification of (i)~the kinematic plant, (ii)~the power-law plus Ornstein--Uhlenbeck truth wind, (iii)~the GPS-based wind estimator, (iv)~the shrinking-horizon NMPC cost and constraints, and (v)~the multi-rate closed-loop architecture used in the accompanying MATLAB implementation.
+One seeded numerical example illustrates landing behavior under the default parameters; a statistical Monte Carlo campaign is outside the present scope.
+
+\section{Vehicle Kinematics}
+
+\subsection{State and control}
+
+Let the inertial state be
+\begin{equation}
+\mathbf{x}
+=
+\begin{bmatrix}
+p_x & p_y & h & \psi
+\end{bmatrix}^{\!\top},
+\label{eq:state}
+\end{equation}
+where $(p_x,p_y)$ is horizontal position, $h$ is altitude above the pad plane, and $\psi$ is heading (air-relative course).
+The scalar control $u$ is commanded heading rate:
+\begin{equation}
+u = \dot{\psi},
+\qquad
+|u| \le u_{\max}.
+\label{eq:u}
+\end{equation}
+Asymmetric brake deflection is the physical actuator; for guidance purposes it is common to treat turn rate as the effective input~\cite{SlegersCostello2003}.
+Under a coordinated-turn interpretation with horizontal airspeed $V_h$,
+\begin{equation}
+u = \frac{g}{V_h}\tan\phi,
+\label{eq:coord}
+\end{equation}
+so a bound on $u$ corresponds to a bank-angle limit~\cite{Etkin1996}.
+
+\subsection{Kinematic equations}
+
+Horizontal and vertical airspeeds $V_h$ and $V_v$ are treated as constants (glide ratio $V_h/V_v$).
+With wind velocity $\mathbf{w}=[w_x,\,w_y]^{\top}$ in the horizontal plane, the kinematics are
+\begin{equation}
+\dot{\mathbf{x}}
+=
+\begin{bmatrix}
+V_h\cos\psi + w_x \\
+V_h\sin\psi + w_y \\
+-V_v \\
+u
+\end{bmatrix}.
+\label{eq:dyn}
+\end{equation}
+Ground velocity is therefore air velocity plus wind.
+Altitude decreases at a fixed sink rate, so time-to-go from altitude $h$ is
+\begin{equation}
+t_{\mathrm{go}} = h / V_v
+\label{eq:tgo}
+\end{equation}
+when $V_v>0$.
+This fixed-$V_h,V_v$ structure matches the spirit of kinematic guidance models used for onboard optimization~\cite{Leeman2022}, while remaining deliberately lower order than 6-DOF dynamic models~\cite{Zhao2023,Wei2024}.
+
+\section{Atmosphere and Sensing}
+
+\subsection{Truth wind: shear plus gusts}
+
+The controller never receives the truth wind.
+The plant wind is
+\begin{equation}
+\mathbf{w}(h,t) = \mathbf{w}_{\mathrm{mean}}(h) + \boldsymbol{\xi}(t),
+\label{eq:wsplit}
+\end{equation}
+where the mean profile follows the atmospheric boundary-layer power law referenced to \SI{10}{\meter} (a standard engineering wind-profile model~\cite{Justus1978}):
+\begin{equation}
+\bigl|\mathbf{w}_{\mathrm{mean}}(h)\bigr|
+=
+W_{10}\left(\frac{\max(h,h_{\min})}{10}\right)^{\!\alpha},
+\qquad
+\mathbf{w}_{\mathrm{mean}}
+=
+\bigl|\mathbf{w}_{\mathrm{mean}}\bigr|
+\begin{bmatrix}
+\cos\theta_w \\
+\sin\theta_w
+\end{bmatrix},
+\label{eq:powerlaw}
+\end{equation}
+with direction $\theta_w$ (direction the wind blows toward) and shear exponent $\alpha$.
+A floor $h_{\min}$ (implementation value \SI{2}{\meter}) avoids singularity at $h=0$.
+
+Gusts $\boldsymbol{\xi}\in\mathbb{R}^2$ follow a discretized Ornstein--Uhlenbeck (OU) process with correlation time $\tau_g$ and stationary standard deviation $\sigma_g$.
+With plant step $\Delta t$,
+\begin{equation}
+\boldsymbol{\xi}_{k+1}
+=
+\Bigl(1-\frac{\Delta t}{\tau_g}\Bigr)\boldsymbol{\xi}_k
++
+\sigma_g\sqrt{\frac{2\Delta t}{\tau_g}}\,\boldsymbol{\eta}_k,
+\label{eq:ou}
+\end{equation}
+where $\boldsymbol{\eta}_k\sim\mathcal{N}(\mathbf{0},\mathbf{I}_2)$.
+OU wind models have been used as guidance-grade stochastic wind representations~\cite{Turkoglu2014}; here they are a lightweight stand-in for Dryden-class continuous turbulence filters~\cite{Beal1993,MILHDBK1797}.
+
+\subsection{Measurement and wind estimate}
+
+At each plant step the air-relative horizontal velocity is
+\begin{equation}
+\mathbf{v}_{\mathrm{air}}
+=
+V_h
+\begin{bmatrix}
+\cos\psi \\
+\sin\psi
+\end{bmatrix}.
+\label{eq:vair}
+\end{equation}
+A GPS-like ground-velocity measurement is
+\begin{equation}
+\mathbf{v}_{\mathrm{GPS}}
+=
+\mathbf{v}_{\mathrm{air}} + \mathbf{w} + \boldsymbol{\nu},
+\qquad
+\boldsymbol{\nu}\sim\mathcal{N}(\mathbf{0},\sigma_{\mathrm{GPS}}^2\mathbf{I}_2).
+\label{eq:vgps}
+\end{equation}
+The raw wind observation $\mathbf{w}_{\mathrm{raw}}=\mathbf{v}_{\mathrm{GPS}}-\mathbf{v}_{\mathrm{air}}$ is filtered by a first-order low-pass estimator with time constant $\tau_e$:
+\begin{equation}
+\hat{\mathbf{w}}_{k+1}
+=
+\hat{\mathbf{w}}_k
++
+a\bigl(\mathbf{w}_{\mathrm{raw},k}-\hat{\mathbf{w}}_k\bigr),
+\qquad
+a = \frac{\Delta t}{\Delta t+\tau_e}.
+\label{eq:lpf}
+\end{equation}
+Thus the NMPC prediction wind $\hat{\mathbf{w}}$ tracks a filtered, noisy reconstruction of truth wind and is held constant over each prediction horizon.
+
+\section{Nonlinear MPC Formulation}
+
+\subsection{Decision variables and shrinking horizon}
+
+At a control update with state $\mathbf{x}$ and estimate $\hat{\mathbf{w}}$, the decision vector is the heading-rate sequence
+\begin{equation}
+\mathbf{U}
+=
+\begin{bmatrix}
+u_0 & u_1 & \cdots & u_{N-1}
+\end{bmatrix}^{\!\top},
+\qquad
+|u_i|\le u_{\max}.
+\label{eq:U}
+\end{equation}
+Because remaining flight time shrinks with altitude, the horizon length is
+\begin{equation}
+N
+=
+\min\Bigl(N_{\max},\;
+\max\bigl(3,\,\lceil t_{\mathrm{go}}/T_s\rceil\bigr)
+\Bigr),
+\label{eq:N}
+\end{equation}
+where $T_s$ is the prediction step.
+Near the ground the optimizer is therefore placing the predicted touchdown point rather than tracking a distant path.
+
+A warm start shifts the previous solution one step and pads or trims to length $N$, which is standard practice for successive NMPC solves~\cite{Rawlings2017}.
+
+\subsection{Prediction model}
+
+Candidate sequences are scored by rolling~\eqref{eq:dyn} forward under wind $\hat{\mathbf{w}}$ (constant in time and altitude within one solve) with control $u_i$ on interval $i$.
+Integration uses classical RK4.
+If predicted altitude would cross zero within a full step $T_s$, the last step is shortened to
+\begin{equation}
+\Delta t_{\mathrm{last}} = h / V_v
+\label{eq:dtlast}
+\end{equation}
+so that the predicted impact point is not biased by negative-altitude overshoot.
+Altitude is clamped at zero after each RK4 residual.
+
+\subsection{Cost function}
+
+Let $\mathbf{r}=(p_x,p_y)$ and $\mathbf{r}_t$ be the pad location.
+With previous applied control $u_{-1}$, the scalar cost is
+\begin{equation}
+\begin{aligned}
+J(\mathbf{U})
+&=
+\sum_{i=0}^{N'-1}
+\Biggl[
+Q_{\mathrm{path}}\|\mathbf{r}_i-\mathbf{r}_t\|_2^2
++
+R_u u_i^2
++
+R_{\Delta u}(u_i-u_{i-1})^2
+\\
+&\qquad
++
+\mathbf{1}_{\{h_i < h_{\mathrm{ap}}\}}\,
+Q_{\mathrm{head}}\,e_i^2
+\Biggr]
+\\
+&\quad
++
+Q_f\Bigl(1+\frac{c_{\mathrm{term}}}{\max(h_{N'},\,h_{\varepsilon})}\Bigr)
+\|\mathbf{r}_{N'}-\mathbf{r}_t\|_2^2,
+\end{aligned}
+\label{eq:cost}
+\end{equation}
+where $N'\le N$ stops at predicted touchdown, $h_{\varepsilon}=\SI{5}{\meter}$ floors the terminal growth, and the wrapped heading error relative to upwind is
+\begin{equation}
+\begin{aligned}
+\psi_{\mathrm{uw}}
+&=
+\operatorname{atan2}(-\hat{w}_y,\,-\hat{w}_x),
+\\
+e_i
+&=
+\operatorname{atan2}\bigl(\sin(\psi_i-\psi_{\mathrm{uw}}),\,
+\cos(\psi_i-\psi_{\mathrm{uw}})\bigr).
+\end{aligned}
+\label{eq:head}
+\end{equation}
+The indicator activates below approach altitude $h_{\mathrm{ap}}$, encouraging an into-wind final heading for softer groundspeed at touchdown~\cite{SlegersYakimenko2009,SlegersYakimenko2011}.
+Terminal weight growth with decreasing $h$ shifts emphasis from path shaping early to pad accuracy late.
+
+\subsection{Numerical solve}
+
+Each update solves
+\begin{equation}
+\min_{\mathbf{U}}\; J(\mathbf{U})
+\quad\text{s.t.}\quad
+|u_i|\le u_{\max},
+\label{eq:nlp}
+\end{equation}
+with sequential quadratic programming (SQP) via \texttt{fmincon}~\cite{NocedalWright2006,Rawlings2017}.
+Only the first move $u_0$ is applied; the remainder of $\mathbf{U}$ warms the next solve (receding horizon).
+
+\section{Closed-Loop Architecture}
+
+One descent proceeds as follows.
+The plant integrates~\eqref{eq:dyn} under truth wind~\eqref{eq:wsplit}--\eqref{eq:ou} at step $\Delta t$.
+The estimator~\eqref{eq:lpf} runs at the same rate.
+The NMPC is resolved every control period $T_c\ge\Delta t$, using $\hat{\mathbf{w}}$ held constant in prediction while the plant continues to experience altitude-varying shear and fresh gusts.
+Model mismatch is therefore structural: prediction assumes a frozen estimated wind, whereas truth wind shears and fluctuates.
+Replanning every $T_c$ is the mechanism that absorbs that mismatch~\cite{Rawlings2017}.
+Information flow is
+\begin{equation}
+\mathbf{x},\,\mathbf{w}
+\;\xrightarrow{\;\Delta t\;}\;
+\mathbf{v}_{\mathrm{GPS}}
+\;\xrightarrow{\;\eqref{eq:lpf}\;}
+\hat{\mathbf{w}}
+\;\xrightarrow{\;T_c\;}
+u=\mathrm{NMPC}(\mathbf{x},\hat{\mathbf{w}})
+\;\xrightarrow{\;\eqref{eq:dyn}\;}
+\mathbf{x}^+.
+\label{eq:loop}
+\end{equation}
+
+\begin{table}[t]
+\centering
+\caption{Default simulation parameters}
+\label{tab:params}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Symbol / name & Value \\
+\midrule
+$V_h$, $V_v$ & \SI{7.0}{\meter\per\second}, \SI{3.5}{\meter\per\second} \\
+$u_{\max}$ & \SI{0.35}{\radian\per\second} \\
+$W_{10}$, $\theta_w$, $\alpha$ & \SI{3.0}{\meter\per\second}, \SI{210}{\degree}, $0.14$ \\
+$\tau_g$, $\sigma_g$ & \SI{8}{\second}, \SI{0.8}{\meter\per\second} \\
+$\Delta t$, $T_c$, $T_s$, $N_{\max}$ & \SI{0.05}{\second}, \SI{1}{\second}, \SI{2}{\second}, $25$ \\
+$\sigma_{\mathrm{GPS}}$, $\tau_e$ & \SI{0.2}{\meter\per\second}, \SI{5}{\second} \\
+$Q_{\mathrm{path}}$, $R_u$, $R_{\Delta u}$ & $0.02$, $2.0$, $4.0$ \\
+$Q_f$, $c_{\mathrm{term}}$, $h_{\mathrm{ap}}$, $Q_{\mathrm{head}}$ & $1.0$, $200$, \SI{60}{\meter}, $40$ \\
+$\mathbf{x}_0$, $\mathbf{r}_t$ & $[650,-450,500,\pi/2]^{\top}$, $[0,0]^{\top}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Illustrative Numerical Behavior}
+
+Table~\ref{tab:params} lists the default parameters used in the accompanying implementation.
+A single seeded descent (RNG seed $2$) was integrated to touchdown.
+Flight time was \SI{142.9}{\second} and horizontal miss distance
+\begin{equation}
+d_{\mathrm{miss}}
+=
+\|\mathbf{r}(t_f)-\mathbf{r}_t\|_2
+\approx
+\SI{22.2}{\meter}.
+\label{eq:miss}
+\end{equation}
+This run is an existence illustration under one wind realization, not a CEP claim.
+The qualitative pattern is that the vehicle first reduces large lateral offset while altitude is plentiful, then the growing terminal weight and upwind heading term dominate the last tens of meters.
+
+\section{Limitations and Conclusion}
+
+The model omits flare, variable airspeed and sink rate, density effects, canopy aeroelasticity, and canopy--payload relative degrees of freedom~\cite{Zhao2023,Wei2024}.
+OU gusts approximate, but do not reproduce, Dryden spectra~\cite{Beal1993}.
+Wind estimation assumes known airspeed and heading; navigation errors beyond ground-velocity noise are not modeled.
+The NMPC prediction freezes $\hat{\mathbf{w}}$, so shear within a horizon is ignored until the next replan.
+
+Within those bounds, the simulation is fully specified by~\eqref{eq:dyn}--\eqref{eq:nlp}: a kinematic plant, a sheared and gusty truth wind, a low-pass wind estimate, and a shrinking-horizon nonlinear program that trades path, effort, smoothness, upwind approach, and touchdown accuracy.
+That specification is intended as the mathematical reference for the associated software and as a baseline for richer dynamics or stochastic MPC extensions.
+
+\section*{Acknowledgments}
+
+This work received no external funding.
+The author declares no conflicts of interest.
+
+\section*{Data Availability}
+
+The MATLAB implementation corresponding to this formulation (\texttt{parafoil\_dynamics}, \texttt{wind\_model}, \texttt{mpc\_parafoil}, \texttt{simulate\_flight}, \texttt{rk4}) is the authoritative executable companion to the equations herein.
+
+\section*{AI Disclosure}
+
+Portions of manuscript organization and drafting were assisted by an AI coding assistant (Cursor).
+The mathematical content was derived from the author's simulation source code; the author reviewed and takes responsibility for all claims, equations, and citations.
+
+\begin{thebibliography}{00}
+
+\bibitem{SlegersCostello2005}
+N.~Slegers and M.~Costello, ``Model predictive control of a parafoil and payload system,'' \emph{J. Guid. Control Dyn.}, vol.~28, no.~4, pp.~816--821, 2005, doi: 10.2514/1.12251.
+
+\bibitem{SlegersCostello2003}
+N.~Slegers and M.~Costello, ``Aspects of control for a parafoil and payload system,'' \emph{J. Guid. Control Dyn.}, vol.~26, no.~6, pp.~898--905, 2003, doi: 10.2514/2.6933.
+
+\bibitem{SlegersYakimenko2009}
+N.~Slegers and O.~A. Yakimenko, ``Optimal control for terminal guidance of autonomous parafoils,'' in \emph{AIAA Guid., Navig., Control Conf.}, 2009, doi: 10.2514/6.2009-2958.
+
+\bibitem{SlegersYakimenko2011}
+N.~Slegers and O.~A. Yakimenko, ``Terminal guidance of autonomous parafoils in high wind-to-airspeed ratios,'' \emph{Proc. Inst. Mech. Eng. G: J. Aerosp. Eng.}, vol.~225, no.~3, pp.~336--346, 2011, doi: 10.1243/09544100JAERO749.
+
+\bibitem{Rademacher2009}
+B.~J. Rademacher, P.~Lu, A.~L. Strahan, and C.~J. Cerimele, ``In-flight trajectory planning and guidance for autonomous parafoils,'' \emph{J. Guid. Control Dyn.}, vol.~32, no.~6, pp.~1697--1712, 2009, doi: 10.2514/1.44862.
+
+\bibitem{Leeman2022}
+A.~P. Leeman, V.~Preda, I.~Huertas, and S.~Bennani, ``Autonomous parafoil precision landing using convex real-time optimized guidance and control,'' \emph{CEAS Space J.}, vol.~15, no.~2, pp.~371--384, 2022, doi: 10.1007/s12567-021-00406-z.
+
+\bibitem{Wei2024}
+Z.~Wei, Y.~Gao, and Z.~Shao, ``Autonomous parafoil system precision landing via closed-loop guidance and control considering six-degree-of-freedom model,'' in \emph{AIAA SciTech Forum}, 2024, Art.\ no.~AIAA 2024-0316, doi: 10.2514/6.2024-0316.
+
+\bibitem{Zhao2023}
+L.~Zhao, J.~Tao, H.~Sun, and Q.~Sun, ``Dynamic modelling of parafoil system based on aerodynamic coefficients identification,'' \emph{Automatika}, vol.~64, no.~2, pp.~291--303, 2023, doi: 10.1080/00051144.2022.2145697.
+
+\bibitem{Justus1978}
+C.~G. Justus, W.~R. Hargraves, A.~Mikhail, and D.~Graber, ``Methods for estimating wind speed frequency distributions,'' \emph{J. Appl. Meteorol.}, vol.~17, no.~3, pp.~350--353, 1978.
+
+\bibitem{Turkoglu2014}
+K.~Turkoglu, ``Statistics based modeling of wind speed and wind direction in real time optimal guidance strategies via Ornstein--Uhlenbeck stochastic processes,'' in \emph{4th Aviation, Range, and Aerospace Meteorology Special Symp., AMS Annu. Meeting}, Atlanta, GA, USA, 2014.
+
+\bibitem{Beal1993}
+T.~R. Beal, ``Digital simulation of atmospheric turbulence for Dryden and von Karman models,'' \emph{J. Guid. Control Dyn.}, vol.~16, no.~1, pp.~132--138, 1993, doi: 10.2514/3.11437.
+
+\bibitem{MILHDBK1797}
+U.S. Department of Defense, ``Flying qualities of piloted aircraft,'' MIL-HDBK-1797, 1997.
+
+\bibitem{Etkin1996}
+B.~Etkin and L.~D. Reid, \emph{Dynamics of Flight: Stability and Control}, 3rd~ed.\ Wiley, 1996.
+
+\bibitem{Rawlings2017}
+J.~B. Rawlings, D.~Q. Mayne, and M.~Diehl, \emph{Model Predictive Control: Theory, Computation, and Design}, 2nd~ed.\ Nob Hill Publishing, 2017.
+
+\bibitem{NocedalWright2006}
+J.~Nocedal and S.~J. Wright, \emph{Numerical Optimization}, 2nd~ed.\ Springer, 2006.
+
+\end{thebibliography}
+
+\end{document}
