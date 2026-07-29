@@ -354,15 +354,16 @@ def s09_video_storyboard(prs):
         (FRAMES / "t40_mid.png", "t ≈ 40 s · mid / loiter"),
         (FRAMES / "t_end_touchdown.png", "touchdown"),
     ]
-    w = Inches(5.5)
-    h_img = Inches(5.5 * 9 / 16)
-    gap_x, gap_y = Inches(0.35), Inches(0.38)
+    # 2×2 grid sized so captions + footer clear the bottom
+    w = Inches(5.85)
+    h_img = Inches(2.45)
+    gap_x, gap_y = Inches(0.4), Inches(0.42)
     for i, (path, caption) in enumerate(frames):
         col, row = i % 2, i // 2
         left = MARGIN + col * (w + gap_x)
-        top = Inches(1.2) + row * (h_img + gap_y)
+        top = Inches(1.15) + row * (h_img + gap_y)
         if path.exists():
-            add_image(slide, path, left, top, width=w)
+            add_image(slide, path, left, top, height=h_img)
         tf = textbox(slide, left, top + h_img + Inches(0.02), w, Inches(0.28))
         write(tf, caption, size=12, color=THEME["accent"], bold=True, first=True)
     footer(slide, 9, TOTAL)
