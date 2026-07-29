@@ -1,0 +1,5 @@
+Miss distance [m] across seeds 1-5 (turbulence/noise realizations):
+  calm               [10.8  6.1 23.  24.7 23.5]  median=23.0  max=24.7
+  steady_wind        [17.1 13.4 14.  14.3 19.5]  median=14.3  max=19.5
+  shear_turbulence   [14.9 15.3 26.7 26.2 46.4]  median=26.2  max=46.4
+  strong_gusts       [14.4 12.5 37.3 44.3 26.9]  median=26.9  max=44.3
